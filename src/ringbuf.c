@@ -87,6 +87,13 @@ struct ringbuf {
 	size_t			space;
 
 	/*
+	 * The amount of used ring buffer space.
+	 * Used to tell the difference between an
+	 * empty buffer and an exactly-full buffer.
+	 */
+	size_t			used;
+
+	/*
 	 * The NEXT hand is atomically updated by the producer.
 	 * WRAP_LOCK_BIT is set in case of wrap-around; in such case,
 	 * the producer can update the 'end' offset.
@@ -170,6 +177,20 @@ stable_nextoff(ringbuf_t *rbuf)
 }
 
 /*
+ * adjust_used: adjust the amount of used ring-buffer space.
+ */
+static inline void
+adjust_used(ringbuf_t *rbuf, ssize_t delta)
+{
+	/* ABA here isn't an error, so no need to detect or prevent it. */
+	ssize_t was_used, now_used;
+	do {
+		was_used = rbuf->used;
+		now_used = was_used + delta;
+	} while (!atomic_compare_exchange_weak(&rbuf->used, was_used, now_used));
+}
+
+/*
  * ringbuf_acquire: request a space of a given length in the ring buffer.
  *
  * => On success: returns the offset at which the space is available.
@@ -182,6 +203,12 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
 
 	ASSERT(len > 0 && len <= rbuf->space);
 	ASSERT(w->seen_off == RBUF_OFF_MAX);
+
+	/*
+	 * Adjust the amount of used space before testing for an
+	 * exactly-full buffer.
+	 */
+	adjust_used(rbuf, len);
 
 	do {
 		ringbuf_off_t written;
@@ -206,9 +233,11 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
 		 */
 		target = next + len;
 		written = rbuf->written;
-		if (__predict_false(next < written && target >= written)) {
+		if (__predict_false(next < written && (target > written
+				|| (target == written && rbuf->used >= rbuf->space)))) {
 			/* The producer must wait. */
 			w->seen_off = RBUF_OFF_MAX;
+			adjust_used(rbuf, -((ssize_t)len));
 			return -1;
 		}
 
@@ -228,6 +257,7 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
 			target = exceed ? (WRAP_LOCK_BIT | len) : 0;
 			if ((target & RBUF_OFF_MASK) >= written) {
 				w->seen_off = RBUF_OFF_MAX;
+				adjust_used(rbuf, -((ssize_t)len));
 				return -1;
 			}
 			/* Increment the wrap-around counter. */
@@ -297,7 +327,7 @@ retry:
 	 * area to be consumed.
 	 */
 	next = stable_nextoff(rbuf) & RBUF_OFF_MASK;
-	if (written == next) {
+	if (written == next && rbuf->used == 0) {
 		/* If producers did not advance, then nothing to do. */
 		return 0;
 	}
@@ -405,4 +435,5 @@ ringbuf_release(ringbuf_t *rbuf, size_t nbytes)
 	ASSERT(nwritten <= rbuf->space);
 
 	rbuf->written = (nwritten == rbuf->space) ? 0 : nwritten;
+	adjust_used(rbuf, -((ssize_t)nbytes));
 }
