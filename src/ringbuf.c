@@ -91,7 +91,7 @@ struct ringbuf {
 	 * Used to tell the difference between an
 	 * empty buffer and an exactly-full buffer.
 	 */
-	size_t			used;
+	volatile ssize_t	used;
 
 	/*
 	 * The NEXT hand is atomically updated by the producer.
@@ -208,7 +208,7 @@ ringbuf_acquire(ringbuf_t *rbuf, ringbuf_worker_t *w, size_t len)
 	 * Adjust the amount of used space before testing for an
 	 * exactly-full buffer.
 	 */
-	adjust_used(rbuf, len);
+	adjust_used(rbuf, (ssize_t)len);
 
 	do {
 		ringbuf_off_t written;
