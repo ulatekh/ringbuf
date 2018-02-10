@@ -182,7 +182,6 @@ prune_unregistered_workers(ringbuf_t *rbuf)
 
 			/* Advance past this unused worker-record. */
 			new_used_worker = (old_used_worker_index + 1) % rbuf->nworkers;
-			new_used_worker |= WRAP_INCR(old_used_worker);
 		} while (!atomic_compare_exchange_weak(p_used_worker, old_used_worker, new_used_worker));
 	}
 
@@ -232,7 +231,6 @@ register_worker(ringbuf_t *rbuf, unsigned registration_type)
 				break;
 			new_free_worker = ((old_free_worker & RBUF_OFF_MASK) + 1)
 				% rbuf->nworkers;
-			new_free_worker |= WRAP_INCR(old_free_worker);
 
 			/* Remember that this worker-record is being registered. */
 			w = &rbuf->workers[new_free_worker & RBUF_OFF_MASK];
